@@ -12,6 +12,15 @@
       "last_reading_date": {
         "default": "mdi:calendar-check"
       },
+      "period_daily_average": {
+        "default": "mdi:water-percent"
+      },
+      "period_usage": {
+        "default": "mdi:water-outline"
+      },
+      "period_usage_charge": {
+        "default": "mdi:currency-usd"
+      },
       "total_usage": {
         "default": "mdi:water-plus"
       }

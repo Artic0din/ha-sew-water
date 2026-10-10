@@ -42,6 +42,7 @@ import voluptuous as vol
 from .const import (
     CONF_BILLING_ACCOUNT_ID,
     CONF_COOKIES,
+    CONF_DIGITAL_METER,
     CONF_IMPORT_FROM,
     CONF_METER_ID,
     CONF_METER_SERIAL,
@@ -201,6 +202,7 @@ class SewConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._entry_data.update(
                     {
                         CONF_BILLING_ACCOUNT_ID: meter.billing_account_id,
+                        CONF_DIGITAL_METER: meter.digital,
                         CONF_METER_ID: meter.meter_id,
                         CONF_METER_SERIAL: meter.meter_serial,
                         CONF_SUPPLY_TYPE: supply,
@@ -216,6 +218,9 @@ class SewConfigFlow(ConfigFlow, domain=DOMAIN):
                 await self.async_set_unique_id(meter_key)
                 self._abort_if_unique_id_configured()
                 self._entry_data[CONF_STATISTIC_ID] = f"{DOMAIN}:water_usage_{meter_key}"
+                if not meter.digital:
+                    # No hourly readings exist, so there is no history to import.
+                    return self.async_create_entry(title=f"{self._username} ({supply})", data=self._entry_data)
                 return await self.async_step_history()
         schema = vol.Schema(
             {

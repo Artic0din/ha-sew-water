@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 import logging
@@ -31,6 +33,7 @@ from .const import (
     BACKFILL_RETRY_MINUTES,
     CONF_BILLING_ACCOUNT_ID,
     CONF_COOKIES,
+    CONF_DIGITAL_METER,
     CONF_IMPORT_FROM,
     CONF_METER_ID,
     CONF_METER_SERIAL,
@@ -49,7 +52,9 @@ from .const import (
 )
 from .sew_client import (
     AccountIds,
+    BillingPeriod,
     DailyUsage,
+    MeterRead,
     SewAuthError,
     SewBusyError,
     SewClient,
@@ -78,6 +83,9 @@ class SewData:
         total_litres: Running total of every litre imported into statistics.
         last_poll: When the portal was last read successfully.
         window: Every day fetched in the last poll, oldest first.
+        supply: ``mains`` or ``recycled``; picks which supply's billing figures the properties return.
+        period: Most recent completed billing period, for meters without hourly data.
+        reads: Meter read history, oldest first, for meters without hourly data.
     """
 
     ids: AccountIds
@@ -85,6 +93,77 @@ class SewData:
     total_litres: float
     last_poll: datetime
     window: tuple[DailyUsage, ...]
+    supply: str = "mains"
+    period: BillingPeriod | None = None
+    reads: tuple[MeterRead, ...] = ()
+
+    @property
+    def period_volume_kl(self) -> float | None:
+        """Kilolitres billed for the selected supply in the latest period."""
+        if self.period is None:
+            return None
+        return self.period.recycled_kl if self.supply == "recycled" else self.period.drinking_kl
+
+    @property
+    def period_cost(self) -> float | None:
+        """Usage charge in dollars for the selected supply in the latest period."""
+        if self.period is None:
+            return None
+        return self.period.recycled_cost if self.supply == "recycled" else self.period.drinking_cost
+
+    @property
+    def period_daily_average_litres(self) -> float | None:
+        """Litres per day over the latest period for the selected supply."""
+        if self.period is None or self.period_volume_kl is None:
+            return None
+        return round(self.period_volume_kl * 1000 / self.period.days, 1)
+
+    @property
+    def period_end_read(self) -> MeterRead | None:
+        """The meter read that closed the latest period, when the portal lists it."""
+        if self.period is None:
+            return None
+        return next((read for read in self.reads if read.read_date == self.period.end), None)
+
+
+@contextmanager
+def _portal_errors() -> Iterator[None]:
+    """Translate client errors into the exceptions Home Assistant's update machinery understands.
+
+    Raises:
+        ConfigEntryAuthFailed: If the stored session is no longer accepted, triggering reauth.
+        UpdateFailed: If the portal is busy (with a short ``retry_after``), unreachable or answers
+            unexpectedly.
+    """
+    try:
+        yield
+    except SewAuthError as err:
+        raise ConfigEntryAuthFailed(
+            translation_domain=DOMAIN,
+            translation_key="session_rejected",
+            translation_placeholders={"error": str(err)},
+        ) from err
+    except SewBusyError as err:
+        # Salesforce throttles with an Apex error rather than a 429; back off briefly instead of
+        # waiting for the next daily poll.
+        raise UpdateFailed(
+            translation_domain=DOMAIN,
+            translation_key="portal_busy",
+            translation_placeholders={"error": str(err)},
+            retry_after=err.retry_after or BUSY_RETRY_SECONDS,
+        ) from err
+    except SewConnectionError as err:
+        raise UpdateFailed(
+            translation_domain=DOMAIN,
+            translation_key="cannot_connect",
+            translation_placeholders={"error": str(err)},
+        ) from err
+    except SewProtocolError as err:
+        raise UpdateFailed(
+            translation_domain=DOMAIN,
+            translation_key="unexpected_response",
+            translation_placeholders={"error": str(err)},
+        ) from err
 
 
 class SewCoordinator(DataUpdateCoordinator[SewData]):
@@ -110,6 +189,7 @@ class SewCoordinator(DataUpdateCoordinator[SewData]):
             billing_account_id=entry.data[CONF_BILLING_ACCOUNT_ID],
             meter_id=entry.data[CONF_METER_ID],
             meter_serial=entry.data.get(CONF_METER_SERIAL),
+            digital=entry.data.get(CONF_DIGITAL_METER, True),
         )
 
     # --------------------------------------------------------------- scheduling
@@ -192,7 +272,7 @@ class SewCoordinator(DataUpdateCoordinator[SewData]):
         The task is tied to the config entry, so unloading cancels it and the next setup starts it
         again if the history is still missing.
         """
-        if (start := self.import_from) is None:
+        if (start := self.import_from) is None or not self.ids.digital:
             return
         self.backfill_task = self.config_entry.async_create_background_task(
             self.hass, self._async_backfill(start), name=f"{DOMAIN} backfill"
@@ -250,6 +330,11 @@ class SewCoordinator(DataUpdateCoordinator[SewData]):
 
     async def _async_update_data(self) -> SewData:
         """Fetch the trailing window (or the full backfill on first run) and store statistics."""
+        if not self.ids.digital:
+            try:
+                return await self._async_import_billing()
+            finally:
+                self.update_interval = self._interval(self.config_entry)
         yesterday = dt_util.now().date() - timedelta(days=1)
         first_run = await self._async_last_statistic_day() is None
         window_days = BACKFILL_DAYS if first_run else TRAILING_WINDOW_DAYS
@@ -295,37 +380,10 @@ class SewCoordinator(DataUpdateCoordinator[SewData]):
             UpdateFailed: If the portal is busy (with a short ``retry_after``), unreachable or answers
                 unexpectedly.
         """
-        try:
+        with _portal_errors():
             if not await self.client.async_is_alive():
                 raise ConfigEntryAuthFailed(translation_domain=DOMAIN, translation_key="session_expired")
             usage = await self.client.async_fetch_usage(self.ids, start, end)
-        except SewAuthError as err:
-            raise ConfigEntryAuthFailed(
-                translation_domain=DOMAIN,
-                translation_key="session_rejected",
-                translation_placeholders={"error": str(err)},
-            ) from err
-        except SewBusyError as err:
-            # Salesforce throttles with an Apex error rather than a 429; back off briefly instead of
-            # waiting for the next daily poll.
-            raise UpdateFailed(
-                translation_domain=DOMAIN,
-                translation_key="portal_busy",
-                translation_placeholders={"error": str(err)},
-                retry_after=err.retry_after or BUSY_RETRY_SECONDS,
-            ) from err
-        except SewConnectionError as err:
-            raise UpdateFailed(
-                translation_domain=DOMAIN,
-                translation_key="cannot_connect",
-                translation_placeholders={"error": str(err)},
-            ) from err
-        except SewProtocolError as err:
-            raise UpdateFailed(
-                translation_domain=DOMAIN,
-                translation_key="unexpected_response",
-                translation_placeholders={"error": str(err)},
-            ) from err
 
         self.last_contact = dt_util.utcnow()
         self._async_store_cookies()
@@ -333,6 +391,37 @@ class SewCoordinator(DataUpdateCoordinator[SewData]):
         latest = next((day for day in reversed(usage) if day.available and day.litres > 0), None)
         _LOGGER.debug("Imported %d day(s) %s..%s; latest reading %s", len(usage), start, end, latest)
         return SewData(ids=self.ids, latest=latest, total_litres=total, last_poll=dt_util.utcnow(), window=tuple(usage))
+
+    async def _async_import_billing(self) -> SewData:
+        """Read the billing periods and meter reads of a meter without hourly data.
+
+        Nothing is written to long-term statistics: a billing period is one figure for a span of weeks, so
+        spreading it over days or hours would invent readings the portal never gave.
+        """
+        with _portal_errors():
+            if not await self.client.async_is_alive():
+                raise ConfigEntryAuthFailed(translation_domain=DOMAIN, translation_key="session_expired")
+            periods = await self.client.async_fetch_billing_periods(self.ids)
+            try:
+                reads = await self.client.async_fetch_meter_reads(self.ids)
+            except (SewProtocolError, SewConnectionError) as err:
+                # The read history only adds the estimated/actual flag; the billed figures stand without it.
+                # Auth errors still propagate, and SewBusyError is a SewConnectionError.
+                _LOGGER.warning("Meter reads unavailable, continuing with billing periods only: %s", err)
+                reads = []
+        self.last_contact = dt_util.utcnow()
+        self._async_store_cookies()
+        _LOGGER.debug("Fetched %d billing period(s) and %d meter read(s)", len(periods), len(reads))
+        return SewData(
+            ids=self.ids,
+            latest=None,
+            total_litres=0.0,
+            last_poll=dt_util.utcnow(),
+            window=(),
+            supply=self.config_entry.data.get(CONF_SUPPLY_TYPE, "mains"),
+            period=periods[-1] if periods else None,
+            reads=tuple(reads),
+        )
 
     def _async_store_cookies(self) -> None:
         """Persist the (possibly refreshed) session cookies so a restart needs no new login."""

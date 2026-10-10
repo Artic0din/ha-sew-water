@@ -55,6 +55,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             raise ServiceValidationError(translation_domain=DOMAIN, translation_key="no_entries")
         start: date = call.data[SERVICE_ATTR_START_DATE]
         for coordinator in coordinators:
+            if not coordinator.ids.digital:
+                # Billing-only meters have no hourly history to import.
+                continue
             try:
                 await coordinator.async_import_from(start)
             except ValueError as err:

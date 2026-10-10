@@ -72,12 +72,48 @@ SENSORS: tuple[SewSensorDescription, ...] = (
 )
 
 
+# Billing figures describe a span of weeks, so none of them carries a state class: that keeps them out of
+# long-term statistics, where they would look like measured daily usage.
+BILLING_SENSORS: tuple[SewSensorDescription, ...] = (
+    SewSensorDescription(
+        key="period_usage",
+        translation_key="period_usage",
+        device_class=SensorDeviceClass.WATER,
+        native_unit_of_measurement=UnitOfVolume.CUBIC_METERS,
+        suggested_display_precision=0,
+        value_fn=lambda data: data.period_volume_kl,
+        attributes_fn=lambda data: {
+            "period_start": data.period.start.isoformat() if data.period else None,
+            "period_end": data.period.end.isoformat() if data.period else None,
+            "days": data.period.days if data.period else None,
+            "estimated_read": data.period_end_read.estimated if data.period_end_read else None,
+        },
+    ),
+    SewSensorDescription(
+        key="period_daily_average",
+        translation_key="period_daily_average",
+        native_unit_of_measurement="L/d",
+        suggested_display_precision=0,
+        value_fn=lambda data: data.period_daily_average_litres,
+    ),
+    SewSensorDescription(
+        key="period_usage_charge",
+        translation_key="period_usage_charge",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement="AUD",
+        suggested_display_precision=2,
+        value_fn=lambda data: data.period_cost,
+    ),
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: SewConfigEntry, async_add_entities: AddConfigEntryEntitiesCallback
 ) -> None:
-    """Create one entity per description."""
+    """Create the entities for the meter: hourly usage for digital meters, billing figures otherwise."""
     coordinator = entry.runtime_data
-    async_add_entities(SewSensor(coordinator, description) for description in SENSORS)
+    descriptions = SENSORS if coordinator.ids.digital else BILLING_SENSORS
+    async_add_entities(SewSensor(coordinator, description) for description in descriptions)
 
 
 class SewSensor(SewEntity, SensorEntity):

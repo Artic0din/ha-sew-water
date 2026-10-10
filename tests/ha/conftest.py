@@ -25,7 +25,7 @@ from custom_components.sew_water.const import (
     CONF_METER_SERIAL,
     DOMAIN,
 )
-from custom_components.sew_water.sew_client import AccountIds, DailyUsage, LoginResult
+from custom_components.sew_water.sew_client import AccountIds, BillingPeriod, DailyUsage, LoginResult, MeterRead
 
 USERNAME = "user@example.com"
 PASSWORD = "hunter2"
@@ -72,6 +72,10 @@ class FakeClient:
         self.litres_per_hour: Callable[[date], int] = lambda _day: 10
         self.calls: list[tuple[str, Any]] = []
         self.fetch_ranges: list[tuple[date, date]] = []
+        self.periods: list[BillingPeriod] = []
+        self.periods_error: Exception | None = None
+        self.reads: list[MeterRead] = []
+        self.reads_error: Exception | None = None
         self.session = _FakeSession()
 
     async def async_login(self, username: str, password: str) -> LoginResult:
@@ -126,6 +130,20 @@ class FakeClient:
             usage_for(date_from + timedelta(days=n), self.litres_per_hour(date_from + timedelta(days=n)))
             for n in range(days)
         ]
+
+    async def async_fetch_billing_periods(self, ids: AccountIds) -> list[BillingPeriod]:
+        """Return the scripted periods, oldest first."""
+        self.calls.append(("fetch_billing_periods", ids.meter_id))
+        if self.periods_error:
+            raise self.periods_error
+        return list(self.periods)
+
+    async def async_fetch_meter_reads(self, ids: AccountIds) -> list[MeterRead]:
+        """Return the scripted reads, oldest first."""
+        self.calls.append(("fetch_meter_reads", ids.meter_id))
+        if self.reads_error:
+            raise self.reads_error
+        return list(self.reads)
 
 
 class _FakeSession:

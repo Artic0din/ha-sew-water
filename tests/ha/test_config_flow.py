@@ -17,6 +17,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.sew_water.const import (
     CONF_BILLING_ACCOUNT_ID,
     CONF_COOKIES,
+    CONF_DIGITAL_METER,
     CONF_IMPORT_FROM,
     CONF_METER_ID,
     CONF_METER_SERIAL,
@@ -89,6 +90,7 @@ async def test_full_flow_creates_entry(hass: HomeAssistant, fake_client: FakeCli
     assert result["data"] == {
         CONF_BILLING_ACCOUNT_ID: BILLING_ACCOUNT_ID,
         CONF_COOKIES: COOKIES,
+        CONF_DIGITAL_METER: True,
         CONF_METER_ID: METER_ID,
         CONF_METER_SERIAL: METER_SERIAL,
         CONF_PASSWORD: PASSWORD,

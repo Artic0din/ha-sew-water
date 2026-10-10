@@ -7,6 +7,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 - Added explicit drinking or recycled water meter selection, with separate entities and hourly history for each meter.
+- Added billing-period sensors (billed usage, daily average and usage charge) for meters the portal does not mark as digital.
+  Their figures never enter long-term statistics. Not yet validated against an account without hourly data.
+
+### Changed
+- Setup now lists meters the portal does not mark as digital instead of refusing them.
 
 ### Fixed
 - Reauthentication preserves the configured meter even when the portal changes the order of its meter list.

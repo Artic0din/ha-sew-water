@@ -156,6 +156,15 @@
       },
       "last_reading_date": {
         "name": "Last reading date"
+      },
+      "period_usage": {
+        "name": "Billed usage"
+      },
+      "period_daily_average": {
+        "name": "Daily average"
+      },
+      "period_usage_charge": {
+        "name": "Usage charge"
       }
     }
   },

@@ -27,6 +27,6 @@ class SewEntity(CoordinatorEntity[SewCoordinator]):
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry_id)},
             manufacturer=MANUFACTURER,
-            model="Digital water meter",
+            model="Digital water meter" if coordinator.ids.digital else "Water meter",
             translation_key=coordinator.config_entry.data.get(CONF_SUPPLY_TYPE, "meter"),
         )
