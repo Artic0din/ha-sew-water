@@ -19,6 +19,8 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.sew_water.const import (
     CONF_COOKIES,
+    CONF_METER_ID,
+    CONF_STATISTIC_ID,
     DOMAIN,
     SERVICE_ATTR_START_DATE,
     SERVICE_FORCE_IMPORT,
@@ -116,6 +118,54 @@ async def test_force_import_reports_portal_failure(
     with pytest.raises(HomeAssistantError, match="Poll failed") as excinfo:
         await hass.services.async_call(DOMAIN, SERVICE_FORCE_IMPORT, {}, blocking=True)
     assert excinfo.value.translation_key == "poll_failed"
+
+
+async def second_meter_entry(hass: HomeAssistant, first: MockConfigEntry) -> MockConfigEntry:
+    """Add a second loaded entry for another meter, as meter selection now allows."""
+    second = MockConfigEntry(
+        domain=DOMAIN,
+        title="second",
+        unique_id="second-meter",
+        version=2,
+        data={**first.data, CONF_METER_ID: "a1K90000000OTHREAC", CONF_STATISTIC_ID: f"{DOMAIN}:water_usage_second"},
+    )
+    second.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(second.entry_id)
+    await hass.async_block_till_done()
+    return second
+
+
+@pytest.mark.parametrize(
+    ("service", "data", "translation_key"),
+    [
+        (SERVICE_FORCE_IMPORT, {}, "poll_failed"),
+        (SERVICE_IMPORT_FROM_DATE, {SERVICE_ATTR_START_DATE: "2026-01-01"}, "import_failed"),
+    ],
+)
+async def test_services_update_every_meter_even_when_one_fails(
+    hass: HomeAssistant,
+    setup_integration: MockConfigEntry,
+    fake_client: FakeClient,
+    service: str,
+    data: dict[str, Any],
+    translation_key: str,
+) -> None:
+    await second_meter_entry(hass, setup_integration)
+    real_fetch = fake_client.async_fetch_usage
+    attempts: list[int] = []
+
+    async def fail_first_then_succeed(*args: Any) -> Any:
+        attempts.append(len(attempts))
+        if len(attempts) == 1:
+            raise SewConnectionError("down")
+        return await real_fetch(*args)
+
+    fake_client.async_fetch_usage = fail_first_then_succeed  # type: ignore[method-assign]
+    with pytest.raises(HomeAssistantError) as excinfo:
+        await hass.services.async_call(DOMAIN, service, data, blocking=True)
+    assert excinfo.value.translation_key == translation_key
+    # The first meter failed, yet the second was still updated.
+    assert len(attempts) == 2
 
 
 async def test_import_from_date_fetches_requested_range(
