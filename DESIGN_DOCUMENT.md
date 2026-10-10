@@ -1,6 +1,6 @@
 # South East Water integration – design document
 
-Version 2.0 (pure-HTTP rewrite). Last updated 2026-09-14.
+Version 2.0 transport, extended for explicit meter selection on 2026-10-10.
 
 This document records *why* the integration is built the way it is. The README covers how to use
 it; the module docstrings cover how each piece works.
@@ -11,14 +11,23 @@ it; the module docstrings cover how each piece works.
 
 | # | Goal | Outcome |
 |---|---|---|
-| G1 | Daily mains water usage from `my.southeastwater.com.au` into Home Assistant. | Long-term statistics for the Energy dashboard plus live sensors. |
+| G1 | Daily drinking and recycled water usage from `my.southeastwater.com.au` into Home Assistant. | Separate long-term statistics and sensors for each selected meter. |
 | G2 | No browser automation. | Version 1.x drove the portal through Browserless/Puppeteer. Every step of the portal flow was proven to be plain HTTP, so 2.0 uses `aiohttp` only. |
 | G3 | Cope with the portal's mandatory one-time code. | Code required once at setup and again only when the session dies; sessions survive restarts. |
 | G4 | Cope with the portal publishing readings late. | Every poll re-fetches and re-imports a trailing window. |
 | G5 | Keep 1.x history. | Same statistic id and row timestamps, so existing rows are overwritten, never duplicated. |
 
-Non-goals: recycled water (author has no such meter), Yarra Valley Water (same Salesforce backend but
-untestable), YAML configuration, PyPI packaging.
+Non-goals: Yarra Valley Water, YAML configuration, PyPI packaging.
+
+### Meter identity
+
+One config entry owns one explicitly selected meter and its session.
+The user confirms drinking versus recycled supply; list order is not a supply identifier.
+New entries use the SHA-256 of the meter record ID for their unique ID and external statistic suffix.
+Reauthentication verifies that the saved account/meter pairing still exists and only updates credentials and cookies.
+Reconfigure pins the same pairing while allowing supply confirmation.
+Entries predating this feature keep their entity IDs and original `sew_water:water_usage_mains` statistic.
+That statistic may contain recycled water imported by an older version; it is never reassigned to another meter.
 
 ## 2. Decisions
 
@@ -127,7 +136,7 @@ setup ──▶ login+MFA ──▶ cookies saved in entry.data
 
 ## 6. Statistics design
 
-- One external statistic, `sew_water:water_usage_mains`, `has_sum=True`, `mean_type=NONE`,
+- One external statistic per meter, `sew_water:water_usage_<meter hash>` (legacy entries retain `sew_water:water_usage_mains`), `has_sum=True`, `mean_type=NONE`,
   `unit_class="volume"`, unit litres.
 - One row per **hour**: start = UTC instant of local midnight + *h* hours (h = 0..23), `state` = that
   hour's litres, `sum` = running total. On the 23-hour daylight-saving day the 24th reading, which

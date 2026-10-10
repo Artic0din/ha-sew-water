@@ -33,6 +33,14 @@
           "mfa_code": "Six digits; spaces and dashes are ignored."
         }
       },
+      "meter": {
+        "title": "Choose a meter",
+        "description": "Select the meter and confirm which water supply it measures. Add the integration again for another meter. Reconfiguring keeps this entry attached to its original meter and history.",
+        "data": {
+          "meter_id": "Meter",
+          "supply_type": "Water supply"
+        }
+      },
       "history": {
         "title": "Import history",
         "description": "Optionally enter the date your digital meter was installed. Everything from that day is imported into long-term statistics in the background after setup; leave it blank to import the last 90 days only. You can always import more later with the sew_water.import_from_date action.",
@@ -77,18 +85,18 @@
       "invalid_code": "The code was not accepted. Check it and try again.",
       "invalid_date": "Enter a valid date.",
       "invalid_email": "Enter a valid email address.",
+      "invalid_meter": "Select one of the available meters and its water supply.",
       "login_unexplained": "The portal did not accept the sign-in but gave no reason. Check that these details work at my.southeastwater.com.au, then enable debug logging for the integration, try again and open an issue with the log.",
       "no_mfa_channel": "The portal did not offer a way to send a code.",
       "start_in_future": "The date must be before today.",
       "unknown": "The portal responded unexpectedly. Check the logs for details."
     },
     "abort": {
-      "already_configured": "This account is already configured.",
+      "already_configured": "This meter is already configured.",
       "cannot_connect": "Could not reach the South East Water portal.",
       "invalid_auth": "The portal rejected the session before setup could finish.",
       "reauth_successful": "Signed in again successfully.",
       "reconfigure_successful": "Signed in again; the new session is stored.",
-      "single_instance_allowed": "South East Water is already set up. Only one account is supported.",
       "unknown": "The portal responded unexpectedly. Check the logs for details.",
       "wrong_account": "The account you signed in to does not match this entry."
     }
@@ -109,6 +117,12 @@
     }
   },
   "selector": {
+    "supply_type": {
+      "options": {
+        "mains": "Drinking water",
+        "recycled": "Recycled water"
+      }
+    },
     "mfa_channel": {
       "options": {
         "email": "Email",
@@ -117,6 +131,12 @@
     }
   },
   "device": {
+    "mains": {
+      "name": "South East Water drinking water"
+    },
+    "recycled": {
+      "name": "South East Water recycled water"
+    },
     "meter": {
       "name": "South East Water"
     }

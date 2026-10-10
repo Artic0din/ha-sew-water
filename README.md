@@ -13,13 +13,13 @@
 [![hassfest](https://github.com/JimboHamez/ha-sew-water/actions/workflows/hassfest.yaml/badge.svg)](https://github.com/JimboHamez/ha-sew-water/actions/workflows/hassfest.yaml)
 [![Security](https://github.com/JimboHamez/ha-sew-water/actions/workflows/security.yml/badge.svg)](https://github.com/JimboHamez/ha-sew-water/actions/workflows/security.yml)
 
-Daily mains water usage from the [South East Water](https://my.southeastwater.com.au) customer portal, straight into Home Assistant.
+Daily drinking and recycled water usage from the [South East Water](https://my.southeastwater.com.au) customer portal, straight into Home Assistant.
 
 It gives you:
 
-- **Energy dashboard water** — one long-term statistic, `sew_water:water_usage_mains`, with a row for every **hour**, so the dashboard's hourly, daily, weekly and monthly views are all real.
+- **Energy dashboard water** — separate long-term statistics for each meter, with a row for every **hour**.
 - **Sensors** — yesterday's litres (with the 24 hourly readings as attributes), a running total and the reading date.
-- **One login** — sign in once with your portal email, password and a one-time code; the session is kept and re-used, and survives restarts.
+- **Saved login per meter** — sign in with your portal email, password and a one-time code for each meter; each session survives restarts.
 - **Late data handled** — the portal publishes readings a day or two late and sometimes corrects them, so every poll re-imports the last 30 days.
 - **Painless re-login** — when the portal finally expires the session, Home Assistant's standard *Reauthentication required* card asks only for a new code.
 
@@ -35,7 +35,17 @@ This integration maps the portal's login, one-time code and usage requests to pl
 
 ---
 
-## 🆕 What's new in v2.2.2
+## Unreleased meter support
+
+Setup asks you to select the meter serial and confirm whether it supplies drinking or recycled water.
+Add the integration again for each additional meter.
+Each new entry has separate entities and a stable statistic ID derived from its meter ID.
+Existing entries keep their original meter, entity IDs and `sew_water:water_usage_mains` history.
+Use **Reconfigure** to confirm an existing entry's supply type; the integration cannot identify the supply from list order.
+If an older version imported recycled water under the mains name, those records remain attached to that original meter.
+Adding the drinking water meter creates a separate history; it does not relabel old readings as drinking water.
+
+## Previous release: v2.2.2
 
 - **Tested with Home Assistant 2026.10** on Python 3.14. The integration needed no changes for 2026.10. If re-authentication fails after the one-time code with *The portal responded unexpectedly*, you're on v2.2.0 or older; update ([#7](https://github.com/JimboHamez/ha-sew-water/issues/7)).
 - **Logins with more than one digital meter** now log how many were found and that the first one was used. Which meter is picked has not changed.
@@ -67,9 +77,10 @@ Full history in the [CHANGELOG](CHANGELOG.md) · [release notes](https://github.
 
 A working login for [my.southeastwater.com.au](https://my.southeastwater.com.au). During setup the portal will send a one-time code to the email address or mobile number on the account, so have that to hand.
 
-**Supported:** South East Water residential and business accounts with a **digital (smart) water meter** — the ones whose usage appears on the portal's *Usage* page as an hourly graph. One config entry covers one portal login; if the login has several billing accounts or meters, the first one the portal returns is used.
+**Supported:** South East Water accounts with digital drinking or recycled water meters whose usage appears on the portal's *Usage* page as an hourly graph.
+One config entry covers one selected meter.
 
-**Not supported:** conventional (manually read) meters, which have no daily data in the portal; recycled-water meters (the author has none to test against); other Victorian retailers, including Yarra Valley Water, even though they run the same portal software.
+**Not supported yet:** conventional (manually read) meters without hourly data; other Victorian retailers, including Yarra Valley Water.
 
 ### 2. Recorder
 
@@ -89,7 +100,7 @@ Only needed if you want the water card on the Energy dashboard. Nothing to set u
 ### HACS (recommended)
 
 1. HACS → Integrations → ⋮ → **Custom repositories**.
-2. Add `https://github.com/JimboHamez/ha-sew-water` as type **Integration**.
+2. Add `https://github.com/Artic0din/ha-sew-water` as type **Integration** for this fork.
 3. Install **South East Water**.
 4. Restart Home Assistant.
 
@@ -104,7 +115,10 @@ Only needed if you want the water card on the Energy dashboard. Nothing to set u
 2. If installed via HACS, HACS → **South East Water** → ⋮ → **Remove**; for a manual install delete `config/custom_components/sew_water/`.
 3. Restart Home Assistant.
 
-One thing is deliberately left behind: the **`sew_water:water_usage_mains` statistic** and its history stay in the recorder database, so reinstalling picks up where you left off. To delete it, use *Settings → Developer tools → Statistics* and remove the orphaned entry.
+Meter statistics and their history stay in the recorder database after removal.
+New entries reuse the same statistic when the same meter is added again.
+An entry upgraded from an older release keeps `sew_water:water_usage_mains` while it remains configured; deleting and recreating that entry creates the new meter-specific statistic instead.
+To delete orphaned history, use *Developer tools → Statistics*.
 
 The integration uses only `aiohttp`, which ships with Home Assistant — nothing else to install.
 
@@ -114,7 +128,7 @@ The integration uses only `aiohttp`, which ships with Home Assistant — nothing
 
 **Settings → Devices & Services → Add Integration → South East Water**
 
-The wizard has four steps; steps 2 and 3 only appear when the portal asks for a one-time code (it always does today).
+The wizard adds a meter and supply selection after sign-in and any one-time code steps, before the optional history date.
 
 ### Step 1 — Sign in
 ![Step 1 — Sign in](images/config-step1-signin.png)
@@ -141,9 +155,15 @@ The wizard has four steps; steps 2 and 3 only appear when the portal asks for a 
 |---|---|
 | One-time code | The 6-digit code the portal just sent. Spaces and dashes are ignored. |
 
-The billing account and meter are discovered automatically once the code is accepted.
+The available billing accounts and meters are discovered once the code is accepted.
+Select the meter serial shown on your bill and choose **Drinking water** or **Recycled water**.
 
-### Step 4 — Import history (optional)
+### Step 4 — Select meter
+
+Choose the meter serial and confirm its supply type.
+The same physical meter cannot be added twice.
+
+### Step 5 — Import history (optional)
 
 | Field | Description |
 |---|---|
@@ -191,7 +211,9 @@ The protocol, the statistics rules and every design decision are in [DESIGN_DOCU
 
 ### Energy dashboard
 
-*Settings → Dashboards → Energy → Water consumption → Add water source* and pick **`sew_water:water_usage_mains`**.
+*Settings → Dashboards → Energy → Water consumption → Add water source* and select the drinking or recycled water statistic.
+New entries use `sew_water:water_usage_<meter hash>`; existing entries keep `sew_water:water_usage_mains`.
+Add the two supplies separately if you want to track both.
 
 > ⚠️ Use the statistic, not the `Total usage` sensor. The statistic has one row per hour with the correct timestamp, including back-filled and corrected days. The sensor only changes once per poll, so the dashboard would attribute a whole day's usage to the minute the poll ran.
 
@@ -199,7 +221,8 @@ The protocol, the statistics rules and every design decision are in [DESIGN_DOCU
 
 ## Entities
 
-All entities sit on one device, **South East Water**.
+Each meter has its own device, named **South East Water drinking water** or **South East Water recycled water**.
+Existing entries use a generic device name until their supply is confirmed through Reconfigure.
 
 | Sensor | Unit | Description |
 |---|---|---|
@@ -317,8 +340,8 @@ actions:
 - **Hourly is the finest resolution.** The portal publishes hourly readings, so that is what the statistic stores; there is no finer data. On the day daylight saving starts (23 hours), the portal's 24th reading is folded into the last hour of that day.
 - **History imported by earlier versions is daily.** Days imported before hourly statistics were introduced have a single row at 11:00; they are converted to hourly rows automatically as they fall inside the 30-day re-import window, or all at once with `sew_water.import_from_date`.
 - **One-time code on every login.** The portal offers no "remember this device". Setup, re-authentication and reconfigure each need a code; the integration keeps the session alive with a small request every 30 minutes so this is rare, but it cannot be avoided when the portal ends the session (for example after a portal release or a password change).
-- **One account per Home Assistant.** A second South East Water entry cannot be added, because every entry would write to the same `sew_water:water_usage_mains` statistic.
-- **One login, one meter.** If a portal login has several billing accounts or meters, only the first one returned by the portal is used. Mains water only — recycled-water meters are not read.
+- **One entry per meter.** Add the integration separately for each meter; each entry keeps its own session and history.
+- **Supply confirmation is manual.** The portal's discovery response does not reliably identify drinking versus recycled supply, so setup asks you to confirm it.
 - **Backfill on first setup is 90 days** unless you give an installation date in the wizard. `sew_water.import_from_date` covers anything else.
 - **Sensor totals versus statistics.** The *Total usage* sensor changes once per poll, so its history attributes the whole day to the minute the poll ran. Use the statistic for the Energy dashboard.
 - **The portal is not an API.** The integration speaks the portal's own web protocol; a change on South East Water's side can stop it working until the integration is updated. The client is isolated in one module to keep such fixes small.
@@ -338,7 +361,7 @@ actions:
 | Repair issue *needs to be set up again* | A config entry from an earlier integration version was found; it holds no portal session and cannot be migrated. | Delete that entry and add the integration again. Existing statistics are kept. |
 | *Daily usage* is `unknown` or the last reading date is several days old | The portal has not published recent days yet, or is returning zeros for them. | Check the portal's *Usage* page for the same days. The next daily poll re-imports the last 30 days automatically; press **Update now** (or call `sew_water.force_import`) to do it now. If this happens every day, set a later **Poll time** in the options. |
 | Entities are *unavailable* | The last poll failed (portal down, busy or unreachable). | The coordinator logs the cause once and retries — after 15 minutes if the portal reported it was busy, otherwise at the next scheduled poll. Press **Update now** (or call `sew_water.force_import`) to retry immediately. |
-| Energy dashboard shows a big spike on one day | The `Total usage` *sensor* was chosen as the water source instead of the statistic. | Change the water source to `sew_water:water_usage_mains`. |
+| Energy dashboard shows a big spike on one day | The `Total usage` *sensor* was chosen as the water source instead of the statistic. | Change the water source to the selected meter's external statistic. |
 | History is missing before a certain date | Only 90 days are imported on first setup unless you gave an installation date. | Call `sew_water.import_from_date` with the date you want to start from. |
 | **South East Water history import did not finish** repair issue | The background import from your installation date failed after its retries. | It runs again on the next reload or restart; or call `sew_water.import_from_date` with the same date to do it now. |
 
@@ -356,7 +379,7 @@ Debug output never includes your password, cookies or one-time codes. Account id
 
 ## Roadmap
 
-- **Recycled water** — not supported; the author has no recycled meter to test against. Contributions welcome.
+- **Conventional meters** — billing-period support is tracked in [issue #2](https://github.com/Artic0din/ha-sew-water/issues/2).
 - **Yarra Valley Water** — runs on the same Salesforce Experience Cloud backend and the client could be adapted, but it is untested and not included.
 
 Full list in [DESIGN_DOCUMENT.md → Open items](DESIGN_DOCUMENT.md#9-open-items).
@@ -370,7 +393,7 @@ Full list in [DESIGN_DOCUMENT.md → Open items](DESIGN_DOCUMENT.md#9-open-items
 | Home Assistant | 2025.12 or newer (2026.3 or newer to show the integration's own icon) |
 | Python | 3.13 or 3.14 (as shipped with Home Assistant) |
 | Runtime dependencies | `aiohttp` (ships with Home Assistant) |
-| Utility | South East Water only (mains water) |
+| Utility | South East Water drinking and recycled water |
 | Quality scale | No tier claimed: the portal client is bundled rather than published as a library — see [Home Assistant quality scale](#home-assistant-quality-scale) |
 
 Credentials are stored in the config entry — Home Assistant's private `.storage`, the same place every integration keeps its secrets. They are never logged and are redacted from diagnostics. Because the portal demands a one-time code on every login, the stored password alone cannot open a new session; it only saves you retyping it during re-authentication.

@@ -66,6 +66,7 @@ class FakeClient:
         self.alive_error: Exception | None = None
         self.fetch_error: Exception | None = None
         self.ids = IDS
+        self.meters: list[AccountIds] | None = None
         self.exported_cookies: list[dict[str, Any]] = list(COOKIES)
         self.imported_cookies: list[dict[str, Any]] | None = None
         self.litres_per_hour: Callable[[date], int] = lambda _day: 10
@@ -92,12 +93,12 @@ class FakeClient:
         if self.submit_code_error:
             raise self.submit_code_error
 
-    async def async_discover_ids(self) -> AccountIds:
+    async def async_discover_ids(self) -> list[AccountIds]:
         """Return the scripted identifiers."""
         self.calls.append(("discover_ids", None))
         if self.discover_error:
             raise self.discover_error
-        return self.ids
+        return self.meters if self.meters is not None else [self.ids]
 
     def export_cookies(self) -> list[dict[str, Any]]:
         """Return the scripted cookie jar."""
