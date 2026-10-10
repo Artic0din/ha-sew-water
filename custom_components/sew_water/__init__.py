@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import date
 import logging
 
@@ -42,19 +43,28 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     def _coordinators() -> list[SewCoordinator]:
         return [entry.runtime_data for entry in hass.config_entries.async_loaded_entries(DOMAIN)]
 
-    async def _force_import(call: ServiceCall) -> None:
+    async def _for_each_coordinator(action: Callable[[SewCoordinator], Awaitable[None]]) -> None:
+        """Run ``action`` for every loaded meter, then raise the first failure, so one bad meter skips none."""
         coordinators = _coordinators()
         if not coordinators:
             raise ServiceValidationError(translation_domain=DOMAIN, translation_key="no_entries")
+        errors: list[HomeAssistantError] = []
         for coordinator in coordinators:
-            await coordinator.async_poll_now()
+            try:
+                await action(coordinator)
+            except HomeAssistantError as err:
+                _LOGGER.warning("%s failed for one meter: %s", coordinator.config_entry.title, err)
+                errors.append(err)
+        if errors:
+            raise errors[0]
+
+    async def _force_import(call: ServiceCall) -> None:
+        await _for_each_coordinator(lambda coordinator: coordinator.async_poll_now())
 
     async def _import_from_date(call: ServiceCall) -> None:
-        coordinators = _coordinators()
-        if not coordinators:
-            raise ServiceValidationError(translation_domain=DOMAIN, translation_key="no_entries")
         start: date = call.data[SERVICE_ATTR_START_DATE]
-        for coordinator in coordinators:
+
+        async def _import(coordinator: SewCoordinator) -> None:
             try:
                 await coordinator.async_import_from(start)
             except ValueError as err:
@@ -65,6 +75,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                     translation_key="import_failed",
                     translation_placeholders={"error": str(err)},
                 ) from err
+
+        await _for_each_coordinator(_import)
 
     hass.services.async_register(DOMAIN, SERVICE_FORCE_IMPORT, _force_import)
     hass.services.async_register(DOMAIN, SERVICE_IMPORT_FROM_DATE, _import_from_date, schema=IMPORT_FROM_DATE_SCHEMA)  # type: ignore[arg-type]
