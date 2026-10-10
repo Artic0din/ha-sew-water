@@ -19,6 +19,8 @@ CONF_MFA_CHANNEL: Final = "mfa_channel"
 CONF_MFA_CODE: Final = "mfa_code"
 CONF_POLL_TIME: Final = "poll_time"
 CONF_SCAN_INTERVAL: Final = "scan_interval"
+CONF_STATISTIC_ID: Final = "statistic_id"
+CONF_SUPPLY_TYPE: Final = "supply_type"
 
 # Days of history imported the first time the integration runs.
 BACKFILL_DAYS: Final = 90

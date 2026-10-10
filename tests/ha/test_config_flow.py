@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from hashlib import sha256
 from typing import Any
 
 from homeassistant import config_entries
@@ -57,6 +58,10 @@ async def start_user_flow(hass: HomeAssistant) -> dict[str, Any]:
 async def submit(hass: HomeAssistant, flow_id: str, user_input: dict[str, Any] | None) -> dict[str, Any]:
     """Submit a step and let Home Assistant settle."""
     result = await hass.config_entries.flow.async_configure(flow_id, user_input)
+    if result.get("step_id") == "meter":
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {CONF_METER_ID: f"{BILLING_ACCOUNT_ID}:{METER_ID}", "supply_type": "mains"}
+        )
     await hass.async_block_till_done()
     return dict(result)
 
@@ -80,7 +85,7 @@ async def test_full_flow_creates_entry(hass: HomeAssistant, fake_client: FakeCli
 
     result = await submit(hass, result["flow_id"], {})
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["title"] == USERNAME
+    assert result["title"] == f"{USERNAME} (mains)"
     assert result["data"] == {
         CONF_BILLING_ACCOUNT_ID: BILLING_ACCOUNT_ID,
         CONF_COOKIES: COOKIES,
@@ -88,8 +93,10 @@ async def test_full_flow_creates_entry(hass: HomeAssistant, fake_client: FakeCli
         CONF_METER_SERIAL: METER_SERIAL,
         CONF_PASSWORD: PASSWORD,
         CONF_USERNAME: USERNAME,
+        "supply_type": "mains",
+        "statistic_id": f"{DOMAIN}:water_usage_{sha256(METER_ID.encode()).hexdigest()}",
     }
-    assert result["result"].unique_id == USERNAME
+    assert result["result"].unique_id == sha256(METER_ID.encode()).hexdigest()
     # The lowercase option key is translated back to the portal's channel name.
     assert ("request_code", "SMS") in fake_client.calls
     assert ("submit_code", "123456") in fake_client.calls
@@ -103,7 +110,7 @@ async def test_username_is_stripped_and_lowercased_for_unique_id(hass: HomeAssis
     result = await submit(hass, result["flow_id"], {})
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_USERNAME] == "User@Example.com"
-    assert result["result"].unique_id == "user@example.com"
+    assert result["result"].unique_id == sha256(METER_ID.encode()).hexdigest()
     assert ("login", ("User@Example.com", PASSWORD)) in fake_client.calls
 
 
@@ -260,12 +267,12 @@ async def test_discovery_errors_abort(
     assert result["reason"] == reason
 
 
-async def test_second_entry_is_refused(hass: HomeAssistant, mock_config_entry: MockConfigEntry) -> None:
-    """Every entry writes the same external statistic, so only one entry is allowed."""
+async def test_second_entry_can_start(hass: HomeAssistant, mock_config_entry: MockConfigEntry) -> None:
+    """Each explicitly selected meter has independent statistics."""
     mock_config_entry.add_to_hass(hass)
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "single_instance_allowed"
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
 
 
 # ----------------------------------------------------------------------------- reauth
@@ -339,8 +346,8 @@ async def test_reauth_with_different_account_aborts(
 ) -> None:
     fake_client.login_result = LoginResult(mfa_required=False, channels=())
     result = await start_reauth(hass, mock_config_entry)
-    # Simulate the portal signing in a different user by changing the stored username mid-flow.
-    hass.config_entries.async_update_entry(mock_config_entry, unique_id="someone@else.example")
+    # The selected meter must remain accessible; another account must never replace it.
+    fake_client.meters = []
     result = await submit(hass, result["flow_id"], {})
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "wrong_account"

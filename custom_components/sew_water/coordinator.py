@@ -36,6 +36,8 @@ from .const import (
     CONF_METER_SERIAL,
     CONF_POLL_TIME,
     CONF_SCAN_INTERVAL,
+    CONF_STATISTIC_ID,
+    CONF_SUPPLY_TYPE,
     DEFAULT_POLL_TIME,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -102,6 +104,8 @@ class SewCoordinator(DataUpdateCoordinator[SewData]):
         self.client = client
         self.last_contact: datetime | None = None
         self.backfill_task: asyncio.Task[None] | None = None
+        # Entries created before meter selection retain their existing history and entity IDs.
+        self.statistic_id = entry.data.get(CONF_STATISTIC_ID, STATISTIC_ID_MAINS)
         self.ids = AccountIds(
             billing_account_id=entry.data[CONF_BILLING_ACCOUNT_ID],
             meter_id=entry.data[CONF_METER_ID],
@@ -340,15 +344,14 @@ class SewCoordinator(DataUpdateCoordinator[SewData]):
 
     # --------------------------------------------------------------- statistics
 
-    @staticmethod
-    def _metadata() -> StatisticMetaData:
-        """Describe the mains-water external statistic used by the Energy dashboard."""
+    def _metadata(self) -> StatisticMetaData:
+        """Describe this meter's external statistic used by the Energy dashboard."""
         return StatisticMetaData(
             has_sum=True,
             mean_type=StatisticMeanType.NONE,
-            name="South East Water mains usage",
+            name=f"South East Water {self.config_entry.data.get(CONF_SUPPLY_TYPE, 'meter')} usage",
             source=DOMAIN,
-            statistic_id=STATISTIC_ID_MAINS,
+            statistic_id=self.statistic_id,
             unit_class=VolumeConverter.UNIT_CLASS,
             unit_of_measurement=UnitOfVolume.LITERS,
         )
@@ -356,9 +359,9 @@ class SewCoordinator(DataUpdateCoordinator[SewData]):
     async def _async_last_statistic_day(self) -> date | None:
         """Return the local day of the newest stored statistic, or ``None`` before the first import."""
         rows = await get_instance(self.hass).async_add_executor_job(
-            get_last_statistics, self.hass, 1, STATISTIC_ID_MAINS, True, {"sum"}
+            get_last_statistics, self.hass, 1, self.statistic_id, True, {"sum"}
         )
-        if not (stats := rows.get(STATISTIC_ID_MAINS)):
+        if not (stats := rows.get(self.statistic_id)):
             return None
         return dt_util.as_local(dt_util.utc_from_timestamp(stats[0]["start"])).date()
 
@@ -400,12 +403,12 @@ class SewCoordinator(DataUpdateCoordinator[SewData]):
             self.hass,
             row_start,
             row_start + timedelta(days=1),
-            {STATISTIC_ID_MAINS},
+            {self.statistic_id},
             "hour",
             None,
             {"sum"},
         )
-        return bool(rows.get(STATISTIC_ID_MAINS))
+        return bool(rows.get(self.statistic_id))
 
     async def _async_sum_before(self, day: date) -> float:
         """Return the running sum of the newest statistic row before ``day`` (0 if there is none)."""
@@ -415,14 +418,14 @@ class SewCoordinator(DataUpdateCoordinator[SewData]):
             self.hass,
             row_start - timedelta(days=LOOKBACK_DAYS),
             row_start,
-            {STATISTIC_ID_MAINS},
+            {self.statistic_id},
             # Hourly buckets so the cut-off is exact: a day bucket would start at midnight and swallow
             # the first row of the window itself.
             "hour",
             None,
             {"sum"},
         )
-        if not (stats := rows.get(STATISTIC_ID_MAINS)):
+        if not (stats := rows.get(self.statistic_id)):
             return 0.0
         return float(stats[-1].get("sum") or 0.0)
 
@@ -435,9 +438,9 @@ class SewCoordinator(DataUpdateCoordinator[SewData]):
         """
         if not usage:
             rows = await get_instance(self.hass).async_add_executor_job(
-                get_last_statistics, self.hass, 1, STATISTIC_ID_MAINS, True, {"sum"}
+                get_last_statistics, self.hass, 1, self.statistic_id, True, {"sum"}
             )
-            stats = rows.get(STATISTIC_ID_MAINS)
+            stats = rows.get(self.statistic_id)
             return float(stats[0].get("sum") or 0.0) if stats else 0.0
         running = await self._async_sum_before(usage[0].day)
         statistics: list[StatisticData] = []

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from hashlib import sha256
 import logging
 import re
 from typing import Any
@@ -23,6 +24,7 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
@@ -47,13 +49,15 @@ from .const import (
     CONF_MFA_CODE,
     CONF_POLL_TIME,
     CONF_SCAN_INTERVAL,
+    CONF_STATISTIC_ID,
+    CONF_SUPPLY_TYPE,
     DEFAULT_POLL_TIME,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MIN_SCAN_INTERVAL,
 )
 from .coordinator import SewConfigEntry
-from .sew_client import SewAuthError, SewClient, SewConnectionError, SewError, SewLoginUnexplainedError
+from .sew_client import AccountIds, SewAuthError, SewClient, SewConnectionError, SewError, SewLoginUnexplainedError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -92,6 +96,7 @@ class SewConfigFlow(ConfigFlow, domain=DOMAIN):
         self._password: str | None = None
         self._channels: tuple[str, ...] = ()
         self._entry_data: dict[str, Any] | None = None
+        self._meters: list[AccountIds] = []
 
     @staticmethod
     @callback
@@ -154,7 +159,7 @@ class SewConfigFlow(ConfigFlow, domain=DOMAIN):
         """Discover account IDs, capture the session and create or update the entry."""
         assert self._client is not None and self._username is not None
         try:
-            ids = await self._client.async_discover_ids()
+            self._meters = await self._client.async_discover_ids()
         except SewAuthError:
             return self.async_abort(reason="invalid_auth")
         except SewConnectionError:
@@ -162,24 +167,76 @@ class SewConfigFlow(ConfigFlow, domain=DOMAIN):
         except SewError:
             _LOGGER.exception("Could not discover the billing account or meter")
             return self.async_abort(reason="unknown")
-        session_data = {
-            CONF_BILLING_ACCOUNT_ID: ids.billing_account_id,
+        self._entry_data = {
             CONF_COOKIES: self._client.export_cookies(),
-            CONF_METER_ID: ids.meter_id,
-            CONF_METER_SERIAL: ids.meter_serial,
             CONF_PASSWORD: self._password,
             CONF_USERNAME: self._username,
         }
-        await self.async_set_unique_id(self._username.lower())
-        if self.source == SOURCE_REAUTH:
-            self._abort_if_unique_id_mismatch(reason="wrong_account")
-            return self.async_update_reload_and_abort(self._get_reauth_entry(), data_updates=session_data)
-        if self.source == SOURCE_RECONFIGURE:
-            self._abort_if_unique_id_mismatch(reason="wrong_account")
-            return self.async_update_reload_and_abort(self._get_reconfigure_entry(), data_updates=session_data)
-        self._abort_if_unique_id_configured()
-        self._entry_data = session_data
-        return await self.async_step_history()
+        if self.source in (SOURCE_REAUTH, SOURCE_RECONFIGURE):
+            entry = self._get_reauth_entry() if self.source == SOURCE_REAUTH else self._get_reconfigure_entry()
+            self._meters = [
+                meter
+                for meter in self._meters
+                if meter.meter_id == entry.data[CONF_METER_ID]
+                and meter.billing_account_id == entry.data[CONF_BILLING_ACCOUNT_ID]
+            ]
+            if self._username.lower() != entry.data[CONF_USERNAME].lower() or not self._meters:
+                return self.async_abort(reason="wrong_account")
+            if self.source == SOURCE_REAUTH:
+                return self.async_update_reload_and_abort(entry, data_updates=self._entry_data)
+        return await self.async_step_meter()
+
+    async def async_step_meter(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Select a meter and confirm its supply without guessing from its position."""
+        assert self._entry_data is not None
+        errors: dict[str, str] = {}
+        # A meter can appear under multiple billing accounts; keep each pairing selectable.
+        choices = {f"{m.billing_account_id}:{m.meter_id}": m for m in self._meters}
+        if user_input is not None:
+            meter = choices.get(user_input[CONF_METER_ID])
+            supply = user_input[CONF_SUPPLY_TYPE]
+            if meter is None or supply not in ("mains", "recycled"):
+                errors["base"] = "invalid_meter"
+            else:
+                self._entry_data.update(
+                    {
+                        CONF_BILLING_ACCOUNT_ID: meter.billing_account_id,
+                        CONF_METER_ID: meter.meter_id,
+                        CONF_METER_SERIAL: meter.meter_serial,
+                        CONF_SUPPLY_TYPE: supply,
+                    }
+                )
+                if self.source == SOURCE_RECONFIGURE:
+                    return self.async_update_reload_and_abort(
+                        self._get_reconfigure_entry(), data_updates=self._entry_data
+                    )
+                if any(e.data.get(CONF_METER_ID) == meter.meter_id for e in self._async_current_entries()):
+                    return self.async_abort(reason="already_configured")
+                meter_key = sha256(meter.meter_id.encode()).hexdigest()
+                await self.async_set_unique_id(meter_key)
+                self._abort_if_unique_id_configured()
+                self._entry_data[CONF_STATISTIC_ID] = f"{DOMAIN}:water_usage_{meter_key}"
+                return await self.async_step_history()
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_METER_ID): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(value=key, label=m.meter_serial or f"Meter {i + 1}")
+                            for i, (key, m) in enumerate(choices.items())
+                        ],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Required(CONF_SUPPLY_TYPE): SelectSelector(
+                    SelectSelectorConfig(
+                        options=["mains", "recycled"],
+                        translation_key=CONF_SUPPLY_TYPE,
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(step_id="meter", data_schema=schema, errors=errors)  # type: ignore[arg-type]
 
     # --------------------------------------------------------------------- steps
 
@@ -256,7 +313,7 @@ class SewConfigFlow(ConfigFlow, domain=DOMAIN):
                 else:
                     data[CONF_IMPORT_FROM] = start.isoformat()
             if not errors:
-                return self.async_create_entry(title=self._username, data=data)
+                return self.async_create_entry(title=f"{self._username} ({data[CONF_SUPPLY_TYPE]})", data=data)
         return self.async_show_form(step_id="history", data_schema=STEP_HISTORY_SCHEMA, errors=errors)  # type: ignore[arg-type]
 
     async def async_step_reconfigure(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:

@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- Added explicit drinking or recycled water meter selection, with separate entities and hourly history for each meter.
+
+### Fixed
+- Reauthentication preserves the configured meter even when the portal changes the order of its meter list.
+- Existing entries retain their original entity IDs and statistics rather than silently moving history to another meter.
+- `sew_water.force_import` and `sew_water.import_from_date` now update every configured meter even when one fails, and report the first failure afterwards.
+
 ## [2.2.2] — 2026-10-08
 
 ### Changed

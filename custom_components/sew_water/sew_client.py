@@ -792,15 +792,15 @@ class SewClient:
 
     # --------------------------------------------------------------------- data
 
-    async def async_discover_ids(self) -> AccountIds:
-        """Find the billing account and meter record IDs for the logged-in customer.
+    async def async_discover_ids(self) -> list[AccountIds]:
+        """Find all eligible billing account and meter pairs for the logged-in customer.
 
         Mirrors the usage page's own start-up call, ``getBillingAccountsAndMetersForUser``, which returns
         the user's billing accounts and the meters on their properties. A login can hold several
-        accounts; the first account whose property has a digital meter is used, with that meter.
+        accounts; selection belongs to the config flow rather than portal ordering.
 
         Returns:
-            The IDs required by ``async_fetch_usage``.
+            The available IDs for ``async_fetch_usage``.
 
         Raises:
             SewAuthError: If not logged in.
@@ -829,25 +829,14 @@ class SewClient:
         candidates = [(a, m) for a in accounts for m in meters if m["Property__c"] == a.get("Property__c")]
         if not candidates:
             raise SewProtocolError(f"No digital meter found for the {len(accounts)} billing account(s) on this login")
-        account, meter = candidates[0]
-        if len(candidates) > 1:
-            # Identifiers stay out of the info line; the debug line lists them so the choice can be checked.
-            _LOGGER.info(
-                "Found %d digital meters across %d billing account(s); using the first the portal lists",
-                len(candidates),
-                len({a["Id"] for a, _ in candidates}),
+        return [
+            AccountIds(
+                billing_account_id=str(account["Id"]),
+                meter_id=str(meter["Id"]),
+                meter_serial=str(meter["Name"]) if meter.get("Name") else None,
             )
-            _LOGGER.debug(
-                "Digital meter serials in portal order: %s; using %s",
-                [m.get("Name") for _, m in candidates],
-                meter.get("Name"),
-            )
-        serial = meter.get("Name")
-        return AccountIds(
-            billing_account_id=str(account["Id"]),
-            meter_id=str(meter["Id"]),
-            meter_serial=str(serial) if serial else None,
-        )
+            for account, meter in candidates
+        ]
 
     @staticmethod
     def _apex_action(classname: str, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -6,7 +6,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import EntityDescription
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import ATTRIBUTION, DOMAIN, MANUFACTURER
+from .const import ATTRIBUTION, CONF_SUPPLY_TYPE, DOMAIN, MANUFACTURER
 from .coordinator import SewCoordinator
 
 
@@ -28,5 +28,5 @@ class SewEntity(CoordinatorEntity[SewCoordinator]):
             identifiers={(DOMAIN, entry_id)},
             manufacturer=MANUFACTURER,
             model="Digital water meter",
-            translation_key="meter",
+            translation_key=coordinator.config_entry.data.get(CONF_SUPPLY_TYPE, "meter"),
         )
