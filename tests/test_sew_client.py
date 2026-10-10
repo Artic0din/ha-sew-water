@@ -395,19 +395,17 @@ async def test_discover_ids_uses_home_token_and_the_usage_page_call(client: SewC
     }
 
 
-async def test_discover_ids_picks_the_account_whose_property_has_a_digital_meter(
-    client: SewClient, mocked: aioresponses
-) -> None:
-    """A login can hold several accounts; the first one may be at a property with only a mechanical meter."""
+async def test_discover_ids_reports_whether_each_meter_is_digital(client: SewClient, mocked: aioresponses) -> None:
+    """A login can hold several accounts; a mechanical meter is offered and flagged, not hidden."""
     mock_home(mocked)
     accounts = [account_record(OTHER_ACCOUNT_ID, OTHER_PROPERTY_ID), account_record()]
     meters = [meter_record(OTHER_METER_ID, OTHER_PROPERTY_ID, digital=False, serial="12345678"), meter_record()]
     mocked.post(AURA_URL, status=200, payload=aura_envelope(discovery_value(accounts, meters)))
-    with patch.object(sew_client._LOGGER, "info") as info:
-        ids = await client.async_discover_ids()
-    assert ids == [AccountIds(billing_account_id=BILLING_ACCOUNT_ID, meter_id=METER_ID, meter_serial=METER_SERIAL)]
-    # Only one digital meter, so there was no choice to report.
-    info.assert_not_called()
+    ids = await client.async_discover_ids()
+    assert ids == [
+        AccountIds(OTHER_ACCOUNT_ID, OTHER_METER_ID, "12345678", digital=False),
+        AccountIds(BILLING_ACCOUNT_ID, METER_ID, METER_SERIAL, digital=True),
+    ]
 
 
 async def test_discover_ids_returns_both_meters_for_selection(client: SewClient, mocked: aioresponses) -> None:
@@ -451,19 +449,15 @@ async def test_discover_ids_without_accounts_is_protocol_error(client: SewClient
 
 @pytest.mark.parametrize(
     "meters",
-    [
-        [],
-        [meter_record(digital=False)],
-        [meter_record(property_id=OTHER_PROPERTY_ID)],
-    ],
-    ids=["no-meters", "mechanical-only", "other-property"],
+    [[], [meter_record(property_id=OTHER_PROPERTY_ID)]],
+    ids=["no-meters", "other-property"],
 )
-async def test_discover_ids_without_matching_digital_meter_is_protocol_error(
+async def test_discover_ids_without_matching_meter_is_protocol_error(
     client: SewClient, mocked: aioresponses, meters: list[dict[str, Any]]
 ) -> None:
     mock_home(mocked)
     mocked.post(AURA_URL, status=200, payload=aura_envelope(discovery_value([account_record()], meters)))
-    with pytest.raises(SewProtocolError, match="No digital meter found for the 1 billing account"):
+    with pytest.raises(SewProtocolError, match="No meter found for the 1 billing account"):
         await client.async_discover_ids()
 
 
@@ -473,7 +467,7 @@ async def test_discover_ids_without_property_on_account_is_protocol_error(
     mock_home(mocked)
     payload = aura_envelope(discovery_value([account_record(property_id=None)], [meter_record()]))
     mocked.post(AURA_URL, status=200, payload=payload)
-    with pytest.raises(SewProtocolError, match="No digital meter"):
+    with pytest.raises(SewProtocolError, match="No meter found"):
         await client.async_discover_ids()
 
 

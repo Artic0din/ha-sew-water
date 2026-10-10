@@ -43,6 +43,13 @@ APEX_USAGE_CLASSNAME = "MysewUsageBillingGraphController"
 APEX_USAGE_METHOD = "getUsageData"
 # The usage page's own discovery call: billing accounts and meters for the logged-in user in one response.
 APEX_DISCOVERY_METHOD = "getBillingAccountsAndMetersForUser"
+# The Billing page's calls: one row per billing period with volumes and charges for both supplies, and the
+# meter-reading history behind it. These work for meters without hourly data.
+APEX_BILLING_CLASSNAME = "cm_AccountBillingUsageAURA"
+APEX_PERIODS_METHOD = "getConsumptionsAndChargesByBillingAccountIds"
+APEX_ACCOUNTS_METHOD = "getBillingAccountsForUser"
+APEX_METER_LIST_METHOD = "getMeterAndReadings"
+APEX_READINGS_METHOD = "getMeterReadings"
 AURA_APP_COMMUNITY = "siteforce:communityApp"
 AURA_APP_LOGIN = "siteforce:loginApp2"
 AURA_PATH = "/s/sfsites/aura"
@@ -169,11 +176,55 @@ class AccountIds:
         billing_account_id: ``Billing_Account__c`` record ID (``a08...``).
         meter_id: ``Meter_Details__c`` record ID (``a1K...``).
         meter_serial: Physical meter serial number when the portal reports it.
+        digital: True when the portal marks the meter as digital, which is what hourly usage requires.
     """
 
     billing_account_id: str
     meter_id: str
     meter_serial: str | None = None
+    digital: bool = True
+
+
+@dataclass(frozen=True)
+class BillingPeriod:
+    """One completed billing period, bounded by two meter reads.
+
+    Attributes:
+        start: Date of the read that opened the period.
+        end: Date of the read that closed the period.
+        days: Days in the period.
+        drinking_kl: Drinking water billed, in kilolitres.
+        drinking_cost: Drinking water usage charge in dollars.
+        recycled_kl: Recycled water billed, in kilolitres.
+        recycled_cost: Recycled water usage charge in dollars.
+    """
+
+    start: date
+    end: date
+    days: int
+    drinking_kl: float
+    drinking_cost: float
+    recycled_kl: float
+    recycled_cost: float
+
+
+@dataclass(frozen=True)
+class MeterRead:
+    """One physical read of a meter.
+
+    Attributes:
+        read_date: Day the meter was read.
+        reading: Register value at the read, in kilolitres.
+        consumption_kl: Kilolitres used since the previous read.
+        days: Days since the previous read.
+        estimated: True for an estimated read, False for an actual one, None when the portal says neither.
+    """
+
+    read_date: date
+    reading: int
+    consumption_kl: float
+    days: int
+    estimated: bool | None
 
 
 @dataclass(frozen=True)
@@ -820,20 +871,17 @@ class SewClient:
         accounts = [a for a in _records(value.get("billingAccounts")) if isinstance(a.get("Id"), str)]
         if not accounts:
             raise SewProtocolError("No billing account found for this login")
-        meters = [
-            m
-            for m in _records(value.get("meters"))
-            if isinstance(m.get("Id"), str) and m.get("Is_Digital__c") is True and m.get("Property__c")
-        ]
-        # Every (account, digital meter) pairing, in the portal's account order and then its meter order.
+        meters = [m for m in _records(value.get("meters")) if isinstance(m.get("Id"), str) and m.get("Property__c")]
+        # Every (account, meter) pairing, in the portal's account order and then its meter order.
         candidates = [(a, m) for a in accounts for m in meters if m["Property__c"] == a.get("Property__c")]
         if not candidates:
-            raise SewProtocolError(f"No digital meter found for the {len(accounts)} billing account(s) on this login")
+            raise SewProtocolError(f"No meter found for the {len(accounts)} billing account(s) on this login")
         return [
             AccountIds(
                 billing_account_id=str(account["Id"]),
                 meter_id=str(meter["Id"]),
                 meter_serial=str(meter["Name"]) if meter.get("Name") else None,
+                digital=meter.get("Is_Digital__c") is True,
             )
             for account, meter in candidates
         ]
@@ -931,3 +979,168 @@ class SewClient:
             message=entry.get("message"),
             available=bool(readings) and entry.get("status", 200) == 200,
         )
+
+    async def _apex_value(self, method: str, params: dict[str, Any]) -> Any:
+        """Call one ``cm_AccountBillingUsageAURA`` method and return its unwrapped value."""
+        context, token = await self._ensure_home()
+        action = self._apex_action(APEX_BILLING_CLASSNAME, method, params)
+        (result,) = await self._aura([action], context, token, HOME_PATH)
+        return _unwrap(self._action_value(result))
+
+    async def async_fetch_billing_periods(self, ids: AccountIds) -> list[BillingPeriod]:
+        """Fetch the completed billing periods for the billing account, oldest first.
+
+        Args:
+            ids: Record IDs from ``async_discover_ids``.
+
+        Raises:
+            SewAuthError: If the session is invalid.
+            SewProtocolError: If the portal returns malformed data.
+        """
+        value = await self._apex_value(APEX_PERIODS_METHOD, {"billingAccIds": [ids.billing_account_id]})
+        return _parse_billing_periods(value)
+
+    async def async_fetch_meter_reads(self, ids: AccountIds) -> list[MeterRead]:
+        """Fetch the physical read history of one meter, oldest first.
+
+        The history call needs the account number and the meter's pit reference, neither of which the
+        usage page's discovery call carries, so they are looked up first.
+
+        Args:
+            ids: Record IDs from ``async_discover_ids``; the meter is matched by its serial.
+
+        Raises:
+            SewAuthError: If the session is invalid.
+            SewProtocolError: If the account or meter cannot be found or the data is malformed.
+        """
+        if not ids.meter_serial:
+            raise SewProtocolError("The meter has no serial, so its reads cannot be looked up")
+        accounts = _records(await self._apex_value(APEX_ACCOUNTS_METHOD, {}))
+        account = next((a for a in accounts if a.get("Id") == ids.billing_account_id), None)
+        if account is None or not account.get("Name") or not account.get("Property__c"):
+            raise SewProtocolError("Billing account number not found for this login")
+        account_number = str(account["Name"])
+        meters = _records(
+            await self._apex_value(
+                APEX_METER_LIST_METHOD, {"property": account["Property__c"], "acctNum": account_number}
+            )
+        )
+        meter = next((m for m in meters if m.get("Name") == ids.meter_serial), None)
+        if meter is None or not meter.get("PitReference") or not meter.get("MeterType"):
+            raise SewProtocolError("Meter not found among the property's meters")
+        value = await self._apex_value(
+            APEX_READINGS_METHOD,
+            {"aMeterType": meter["MeterType"], "aMeterPit": meter["PitReference"], "aAccountNumber": account_number},
+        )
+        return _parse_meter_reads(value)
+
+
+def _json_rows(value: Any, what: str) -> list[Any]:
+    """Return a portal list that may arrive JSON-encoded as a string.
+
+    Raises:
+        SewProtocolError: If the value is not a list.
+    """
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError as err:
+            raise SewProtocolError(f"{what} are not valid JSON") from err
+    if not isinstance(value, list):
+        raise SewProtocolError(f"Unexpected {what}: {type(value).__name__}")
+    return value
+
+
+def _number(row: dict[str, Any], key: str, *, default: float | None = 0.0) -> float:
+    """Read a non-negative number the portal may send as a space-padded string.
+
+    Args:
+        row: The record.
+        key: Field to read.
+        default: Value for a missing or null field; ``None`` makes the field required.
+
+    Raises:
+        SewProtocolError: If the field is missing and required, not numeric, or negative.
+    """
+    raw = row.get(key)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        if default is None:
+            raise SewProtocolError(f"Missing {key}")
+        return default
+    if isinstance(raw, bool) or not isinstance(raw, int | float | str):
+        raise SewProtocolError(f"Unexpected {key}: {raw!r}")
+    try:
+        number = float(raw.strip() if isinstance(raw, str) else raw)
+    except ValueError as err:
+        raise SewProtocolError(f"Unexpected {key}: {raw!r}") from err
+    if not number >= 0:
+        raise SewProtocolError(f"Unexpected {key}: {raw!r}")
+    return number
+
+
+def _optional_date(row: dict[str, Any], key: str) -> date | None:
+    """Read an ISO date; ``None`` when the field is empty.
+
+    Raises:
+        SewProtocolError: If the field holds something that is not a date.
+    """
+    raw = row.get(key)
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, str):
+        raise SewProtocolError(f"Unexpected {key}: {raw!r}")
+    try:
+        return date.fromisoformat(raw[:10])
+    except ValueError as err:
+        raise SewProtocolError(f"Unexpected {key}: {raw!r}") from err
+
+
+def _parse_billing_periods(value: Any) -> list[BillingPeriod]:
+    """Turn the portal's period rows into completed ``BillingPeriod``s, oldest first.
+
+    A row without both read dates is a period that has not closed yet and is left out. Two rows for the
+    same period (a correction) collapse to the later one, so a repeated or corrected poll never counts
+    a period twice.
+    """
+    periods: dict[tuple[date, date], BillingPeriod] = {}
+    for row in _json_rows(value, "billing periods"):
+        if not isinstance(row, dict):
+            raise SewProtocolError("A billing period is not an object")
+        start, end = _optional_date(row, "Previous_Read_Date__c"), _optional_date(row, "Current_Read_Date__c")
+        if start is None or end is None:
+            continue
+        if end <= start:
+            raise SewProtocolError(f"Billing period ends before it starts: {start} to {end}")
+        days = round(_number(row, "Number_of_Days__c", default=float((end - start).days)))
+        if days <= 0:
+            raise SewProtocolError(f"Billing period has {days} days: {start} to {end}")
+        periods[(start, end)] = BillingPeriod(
+            start=start,
+            end=end,
+            days=days,
+            drinking_kl=_number(row, "Water_Volume__c"),
+            drinking_cost=_number(row, "Water_Cost__c"),
+            recycled_kl=_number(row, "Recycled_Water_Volume__c"),
+            recycled_cost=_number(row, "Recycled_Water_Cost__c"),
+        )
+    return [periods[key] for key in sorted(periods, key=lambda k: k[1])]
+
+
+def _parse_meter_reads(value: Any) -> list[MeterRead]:
+    """Turn the portal's read rows into ``MeterRead``s, oldest first, one per read date."""
+    reads: dict[date, MeterRead] = {}
+    for row in _json_rows(value, "meter reads"):
+        if not isinstance(row, dict):
+            raise SewProtocolError("A meter read is not an object")
+        read_date = _optional_date(row, "readDate")
+        if read_date is None:
+            continue
+        flag = str(row.get("estimated") or "").strip().upper()
+        reads[read_date] = MeterRead(
+            read_date=read_date,
+            reading=round(_number(row, "reading", default=None)),
+            consumption_kl=_number(row, "consumption", default=None),
+            days=round(_number(row, "noOfDays")),
+            estimated=True if flag in ("YES", "Y") else False if flag in ("NO", "N") else None,
+        )
+    return [reads[day] for day in sorted(reads)]

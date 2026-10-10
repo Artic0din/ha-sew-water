@@ -12,6 +12,7 @@ MANUFACTURER: Final = "South East Water"
 # Config-entry data keys (username/password use homeassistant.const).
 CONF_BILLING_ACCOUNT_ID: Final = "billing_account_id"
 CONF_COOKIES: Final = "cookies"
+CONF_DIGITAL_METER: Final = "digital_meter"
 CONF_IMPORT_FROM: Final = "import_from"
 CONF_METER_ID: Final = "meter_id"
 CONF_METER_SERIAL: Final = "meter_serial"

@@ -45,6 +45,10 @@ Use **Reconfigure** to confirm an existing entry's supply type; the integration 
 If an older version imported recycled water under the mains name, those records remain attached to that original meter.
 Adding the drinking water meter creates a separate history; it does not relabel old readings as drinking water.
 
+Meters the portal does not mark as digital are now offered too.
+They get billing-period sensors (billed usage, daily average and usage charge for the latest completed period) instead of hourly statistics.
+This was built from a digital account's billing data and checked against its paper bill; it has **not** been run against an account without hourly data, so treat analogue support as unconfirmed until someone with one reports back.
+
 ## Previous release: v2.2.2
 
 - **Tested with Home Assistant 2026.10** on Python 3.14. The integration needed no changes for 2026.10. If re-authentication fails after the one-time code with *The portal responded unexpectedly*, you're on v2.2.0 or older; update ([#7](https://github.com/JimboHamez/ha-sew-water/issues/7)).
@@ -80,7 +84,9 @@ A working login for [my.southeastwater.com.au](https://my.southeastwater.com.au)
 **Supported:** South East Water accounts with digital drinking or recycled water meters whose usage appears on the portal's *Usage* page as an hourly graph.
 One config entry covers one selected meter.
 
-**Not supported yet:** conventional (manually read) meters without hourly data; other Victorian retailers, including Yarra Valley Water.
+**Billing periods only:** meters the portal does not mark as digital get billing-period sensors, not hourly usage (unvalidated, see below).
+
+**Not supported yet:** other Victorian retailers, including Yarra Valley Water.
 
 ### 2. Recorder
 
@@ -162,6 +168,7 @@ Select the meter serial shown on your bill and choose **Drinking water** or **Re
 
 Choose the meter serial and confirm its supply type.
 The same physical meter cannot be added twice.
+A meter the portal does not mark as digital finishes setup here, because it has no hourly history to import.
 
 ### Step 5 — Import history (optional)
 
@@ -229,6 +236,16 @@ Existing entries use a generic device name until their supply is confirmed throu
 | `sensor.south_east_water_daily_usage` | L | Most recent published day's usage. Attributes: `reading_date`, `hourly_readings` (24 values). |
 | `sensor.south_east_water_total_usage` | L | Running total of every day imported (`total_increasing`). |
 | `sensor.south_east_water_last_reading_date` | date | Day the *Daily usage* value belongs to. Diagnostic; **disabled by default** — enable it from the entity's settings if you want it on a card (the same date is the `reading_date` attribute of *Daily usage*). |
+
+Meters the portal does not mark as digital get these instead, read from the portal's billing data.
+They are one figure per billing period, not measured daily usage, so they have no state class and never enter long-term statistics or the Energy dashboard.
+The figures cover the supply you chose at setup.
+
+| Sensor | Unit | Description |
+|---|---|---|
+| `sensor.south_east_water_billed_usage` | m³ (kilolitres) | Water billed in the latest completed period. Attributes: `period_start`, `period_end`, `days`, `estimated_read` (`true` for an estimated closing read, `false` for an actual one, unknown if the read history is unavailable). |
+| `sensor.south_east_water_daily_average` | L/d | Billed usage divided by the days in the period. |
+| `sensor.south_east_water_usage_charge` | AUD | Usage charge for the period, before the fixed service, sewerage and other authority charges. |
 
 | Button | Description |
 |---|---|
@@ -340,6 +357,7 @@ actions:
 - **Hourly is the finest resolution.** The portal publishes hourly readings, so that is what the statistic stores; there is no finer data. On the day daylight saving starts (23 hours), the portal's 24th reading is folded into the last hour of that day.
 - **History imported by earlier versions is daily.** Days imported before hourly statistics were introduced have a single row at 11:00; they are converted to hourly rows automatically as they fall inside the 30-day re-import window, or all at once with `sew_water.import_from_date`.
 - **One-time code on every login.** The portal offers no "remember this device". Setup, re-authentication and reconfigure each need a code; the integration keeps the session alive with a small request every 30 minutes so this is rare, but it cannot be avoided when the portal ends the session (for example after a portal release or a password change).
+- **Billing periods are quarterly and close on a meter read.** The latest period only changes after the next read, and its charge excludes the fixed service charges on your bill.
 - **One entry per meter.** Add the integration separately for each meter; each entry keeps its own session and history.
 - **Supply confirmation is manual.** The portal's discovery response does not reliably identify drinking versus recycled supply, so setup asks you to confirm it.
 - **Backfill on first setup is 90 days** unless you give an installation date in the wizard. `sew_water.import_from_date` covers anything else.
@@ -379,7 +397,7 @@ Debug output never includes your password, cookies or one-time codes. Account id
 
 ## Roadmap
 
-- **Conventional meters** — billing-period support is tracked in [issue #2](https://github.com/Artic0din/ha-sew-water/issues/2).
+- **Conventional meters** — billing-period sensors exist but are unvalidated against an account without hourly data ([issue #2](https://github.com/Artic0din/ha-sew-water/issues/2)).
 - **Yarra Valley Water** — runs on the same Salesforce Experience Cloud backend and the client could be adapted, but it is untested and not included.
 
 Full list in [DESIGN_DOCUMENT.md → Open items](DESIGN_DOCUMENT.md#9-open-items).

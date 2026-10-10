@@ -65,6 +65,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         start: date = call.data[SERVICE_ATTR_START_DATE]
 
         async def _import(coordinator: SewCoordinator) -> None:
+            if not coordinator.ids.digital:
+                # Billing-only meters have no hourly history to import.
+                return
             try:
                 await coordinator.async_import_from(start)
             except ValueError as err:
